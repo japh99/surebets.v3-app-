@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("Surebets: Buscador Avanzado")
-st.markdown("Detecta oportunidades de arbitraje deportivo en tiempo real en el mercado **1x2** y **Local o Visitante vs Empate** para **fútbol**.")
+st.markdown("Detecta oportunidades de arbitraje deportivo en tiempo real en el mercado **1x2** para **fútbol**.")
 st.markdown("---")
 
 # --- 2. Gestión Avanzada de 50 API Keys (Rotación Inteligente) ---
@@ -89,10 +89,9 @@ SPORTS = {
     "Fútbol": "soccer"
 }
 
-# CAMBIO: Definimos los mercados según tu solicitud
+# CAMBIO: Solo el mercado 1x2 (h2h)
 MARKETS = {
-    "Ganador (Local/Empate/Visitante)": "h2h", # 1x2
-    "Local o Visitante vs Empate": "double_chance_and_draw" # Nuevo tipo para la lógica combinada
+    "Ganador (Local/Empate/Visitante)": "h2h" # 1x2
 }
 
 # --- 4. Lógica de Filtro de Eventos por Estado y Antelación ---
@@ -152,149 +151,69 @@ def find_surebets_task(sport_key, api_key_value, api_key_idx, market_selected_ap
 
 
     try:
-        if market_selected_api_key_type == "h2h": # Lógica para Ganador (1x2)
-            events_data, used, remaining = make_single_api_call("h2h")
-            local_used_requests_sum += used
-            local_remaining_requests_last_call = remaining
+        # Solo procesamos el mercado 'h2h'
+        events_data, used, remaining = make_single_api_call("h2h")
+        local_used_requests_sum += used
+        local_remaining_requests_last_call = remaining
 
-            for event in events_data:
-                event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
-                if not event_status: continue
+        for event in events_data:
+            event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
+            if not event_status: continue
 
-                best_odds = {
-                    'home_team': {'odd': 0.0, 'bookmaker': ''},
-                    'away_team': {'odd': 0.0, 'bookmaker': ''},
-                    'draw': {'odd': 0.0, 'bookmaker': ''}
+            best_odds = {
+                'home_team': {'odd': 0.0, 'bookmaker': ''},
+                'away_team': {'odd': 0.0, 'bookmaker': ''},
+                'draw': {'odd': 0.0, 'bookmaker': ''}
+            }
+
+            for bookmaker in event['bookmakers']:
+                for market in bookmaker['markets']:
+                    if market['key'] == "h2h":
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == event['home_team'] and outcome['price'] > best_odds['home_team']['odd']:
+                                best_odds['home_team']['odd'] = outcome['price']
+                                best_odds['home_team']['bookmaker'] = bookmaker['title']
+                            elif outcome['name'] == event['away_team'] and outcome['price'] > best_odds['away_team']['odd']:
+                                best_odds['away_team']['odd'] = outcome['price']
+                                best_odds['away_team']['bookmaker'] = bookmaker['title']
+                            elif outcome['name'] == 'Draw' and outcome['price'] > best_odds['draw']['odd']:
+                                best_odds['draw']['odd'] = outcome['price']
+                                best_odds['draw']['bookmaker'] = bookmaker['title']
+
+            if all(o['odd'] > 0 for o in best_odds.values()):
+                involved_bookmakers = {
+                    best_odds['home_team']['bookmaker'],
+                    best_odds['away_team']['bookmaker'],
+                    best_odds['draw']['bookmaker']
                 }
 
-                for bookmaker in event['bookmakers']:
-                    for market in bookmaker['markets']:
-                        if market['key'] == "h2h":
-                            for outcome in market['outcomes']:
-                                if outcome['name'] == event['home_team'] and outcome['price'] > best_odds['home_team']['odd']:
-                                    best_odds['home_team']['odd'] = outcome['price']
-                                    best_odds['home_team']['bookmaker'] = bookmaker['title']
-                                elif outcome['name'] == event['away_team'] and outcome['price'] > best_odds['away_team']['odd']:
-                                    best_odds['away_team']['odd'] = outcome['price']
-                                    best_odds['away_team']['bookmaker'] = bookmaker['title']
-                                elif outcome['name'] == 'Draw' and outcome['price'] > best_odds['draw']['odd']:
-                                    best_odds['draw']['odd'] = outcome['price']
-                                    best_odds['draw']['bookmaker'] = bookmaker['title']
+                if len(involved_bookmakers) < 2:
+                    continue
 
-                if all(o['odd'] > 0 for o in best_odds.values()):
-                    involved_bookmakers = {
-                        best_odds['home_team']['bookmaker'],
-                        best_odds['away_team']['bookmaker'],
-                        best_odds['draw']['bookmaker']
-                    }
+                sum_inverse_odds = (1 / best_odds['home_team']['odd'] +
+                                    1 / best_odds['draw']['odd'] +
+                                    1 / best_odds['away_team']['odd'])
 
-                    if len(involved_bookmakers) < 2:
-                        continue
-
-                    sum_inverse_odds = (1 / best_odds['home_team']['odd'] +
-                                        1 / best_odds['draw']['odd'] +
-                                        1 / best_odds['away_team']['odd'])
-
-                    if sum_inverse_odds < 1:
-                        utility = (1 - sum_inverse_odds) * 100
-                        if utility > 0.01:
-                            surebets_found.append({
-                                "Deporte": event['sport_title'],
-                                "Liga/Torneo": event['league'],
-                                "Evento": f"{event['home_team']} vs {event['away_team']}",
-                                "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
-                                "Mercado": "Ganador (1x2)",
-                                "Utilidad (%)": utility,
-                                "Selección 1": event['home_team'],
-                                "Cuota 1": best_odds['home_team']['odd'],
-                                "Casa 1": best_odds['home_team']['bookmaker'],
-                                "Selección X": "Empate",
-                                "Cuota X": best_odds['draw']['odd'],
-                                "Casa X": best_odds['draw']['bookmaker'],
-                                "Selección 2": event['away_team'],
-                                "Cuota 2": best_odds['away_team']['odd'],
-                                "Casa 2": best_odds['away_team']['bookmaker']
-                            })
-
-        elif market_selected_api_key_type == "double_chance_and_draw": # Lógica para Local o Visitante vs Empate
-            
-            # Realizar dos llamadas API: una para 'double_chance' y otra para 'h2h'
-            events_dc_data, used_dc, remaining_dc = make_single_api_call("double_chance")
-            local_used_requests_sum += used_dc
-            local_remaining_requests_last_call = remaining_dc # Guarda los créditos de la primera llamada
-
-            events_h2h_data, used_h2h, remaining_h2h = make_single_api_call("h2h")
-            local_used_requests_sum += used_h2h
-            local_remaining_requests_last_call = remaining_h2h # Guarda los créditos de la última llamada para el reporte
-
-            # Combinar los eventos por ID para procesarlos juntos
-            combined_events_map = {}
-            for event_dc in events_dc_data:
-                combined_events_map[event_dc['id']] = {'event_details': event_dc, 'dc_bookmakers': event_dc['bookmakers']}
-            
-            for event_h2h in events_h2h_data:
-                if event_h2h['id'] in combined_events_map:
-                    combined_events_map[event_h2h['id']]['h2h_bookmakers'] = event_h2h['bookmakers']
-                # Si un evento solo existe en h2h pero no en double_chance, lo ignoramos para esta surebet combinada
-
-            for event_id, data in combined_events_map.items():
-                # Asegurarse de tener datos de ambos mercados para el evento
-                if 'dc_bookmakers' not in data or 'h2h_bookmakers' not in data:
-                    continue 
-
-                event = data['event_details']
-                event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
-                if not event_status: continue
-
-                best_odds_home_away = {'odd': 0.0, 'bookmaker': ''}
-                best_odds_draw = {'odd': 0.0, 'bookmaker': ''}
-
-                # Buscar la mejor cuota para 'Home/Away' en el mercado 'double_chance'
-                for bookmaker in data['dc_bookmakers']:
-                    for market in bookmaker['markets']:
-                        if market['key'] == "double_chance":
-                            for outcome in market['outcomes']:
-                                if outcome['name'] == 'Home/Away' and outcome['price'] > best_odds_home_away['odd']:
-                                    best_odds_home_away['odd'] = outcome['price']
-                                    best_odds_home_away['bookmaker'] = bookmaker['title']
-
-                # Buscar la mejor cuota para 'Draw' en el mercado 'h2h'
-                for bookmaker in data['h2h_bookmakers']:
-                    for market in bookmaker['markets']:
-                        if market['key'] == "h2h":
-                            for outcome in market['outcomes']:
-                                if outcome['name'] == 'Draw' and outcome['price'] > best_odds_draw['odd']:
-                                    best_odds_draw['odd'] = outcome['price']
-                                    best_odds_draw['bookmaker'] = bookmaker['title']
-
-                # Si encontramos ambas cuotas válidas, calculamos la surebet 2-way
-                if best_odds_home_away['odd'] > 0 and best_odds_draw['odd'] > 0:
-                    involved_bookmakers = {best_odds_home_away['bookmaker'], best_odds_draw['bookmaker']}
-                    if len(involved_bookmakers) < 2:
-                        continue # Las cuotas deben ser de casas de apuestas diferentes
-
-                    sum_inverse_odds = (1 / best_odds_home_away['odd'] + 1 / best_odds_draw['odd'])
-
-                    if sum_inverse_odds < 1:
-                        utility = (1 - sum_inverse_odds) * 100
-                        if utility > 0.01:
-                            surebets_found.append({
-                                "Deporte": event['sport_title'],
-                                "Liga/Torneo": event['league'],
-                                "Evento": f"{event['home_team']} vs {event['away_team']}",
-                                "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
-                                "Mercado": "Local o Visitante vs Empate",
-                                "Utilidad (%)": utility,
-                                "Selección 1": "Local o Visitante",
-                                "Cuota 1": best_odds_home_away['odd'],
-                                "Casa 1": best_odds_home_away['bookmaker'],
-                                "Selección X": "Empate", # Usamos 'X' para el empate en este formato
-                                "Cuota X": best_odds_draw['odd'],
-                                "Casa X": best_odds_draw['bookmaker'],
-                                "Selección 2": "N/A", # No aplica para surebet de 2 vías
-                                "Cuota 2": "N/A",
-                                "Casa 2": "N/A"
-                            })
+                if sum_inverse_odds < 1:
+                    utility = (1 - sum_inverse_odds) * 100
+                    if utility > 0.01:
+                        surebets_found.append({
+                            "Deporte": event['sport_title'],
+                            "Liga/Torneo": event['league'],
+                            "Evento": f"{event['home_team']} vs {event['away_team']}",
+                            "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
+                            "Mercado": "Ganador (1x2)",
+                            "Utilidad (%)": utility,
+                            "Selección 1": event['home_team'],
+                            "Cuota 1": best_odds['home_team']['odd'],
+                            "Casa 1": best_odds['home_team']['bookmaker'],
+                            "Selección X": "Empate",
+                            "Cuota X": best_odds['draw']['odd'],
+                            "Casa X": best_odds['draw']['bookmaker'],
+                            "Selección 2": event['away_team'],
+                            "Cuota 2": best_odds['away_team']['odd'],
+                            "Casa 2": best_odds['away_team']['bookmaker']
+                        })
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
@@ -338,7 +257,7 @@ with st.sidebar:
     selected_sports_api_keys = [SPORTS["Fútbol"]]
     st.info("Deporte seleccionado: Fútbol")
 
-    # CAMBIO: Selectbox con los mercados actualizados y selección por índice
+    # CAMBIO: Selectbox con solo el mercado 1x2
     selected_market_name = st.selectbox(
         "Selecciona el mercado a escanear:",
         options=list(MARKETS.keys()),
@@ -406,13 +325,12 @@ with st.sidebar:
             st.session_state.active_api_keys_count = len(current_active_keys_indices)
             
             # Verificar si hay suficientes keys activas para los deportes a escanear (aquí solo uno)
-            # Y advertir si el mercado combinado consumirá más créditos.
-            required_api_calls_per_sport = 2 if selected_market_api_key_type == "double_chance_and_draw" else 1
+            # Como solo tenemos 'h2h', solo se requiere una llamada API.
+            required_api_calls_per_sport = 1 
             if st.session_state.active_api_keys_count < len(selected_sports_display) * required_api_calls_per_sport:
                  st.session_state.status_message_placeholder.warning(f"Se necesitan al menos {required_api_calls_per_sport} API Key(s) activa(s) por búsqueda. Solo hay {st.session_state.active_api_keys_count} activas. La búsqueda podría fallar si se agotan.")
             
-            if selected_market_api_key_type == "double_chance_and_draw":
-                st.session_state.status_message_placeholder.info("¡Atención! El mercado 'Local o Visitante vs Empate' consume **dos créditos API** por cada búsqueda.")
+            # CAMBIO: Eliminado el mensaje sobre el doble consumo de créditos para el mercado "Local o Visitante vs Empate".
 
 
             # Usar ThreadPoolExecutor para concurrencia
@@ -572,14 +490,12 @@ if not st.session_state.search_in_progress:
                 st.write("**Detalle de Apuestas:**")
                 st.markdown(f"- **{row['Selección 1']}:** Cuota `{row['Cuota 1']}` en `{row['Casa 1']}`")
                 
-                # Adaptar la visualización según el mercado
+                # Adaptar la visualización según el mercado (solo 1x2 ahora)
+                # Como solo tenemos 1x2, la lógica de if/elif para mercado específico no es estrictamente necesaria aquí
+                # pero la mantengo por si decides añadir más mercados en el futuro.
                 if row['Mercado'] == "Ganador (1x2)":
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
-                    # LÍNEA CORREGIDA:
                     st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
-                elif row['Mercado'] == "Local o Visitante vs Empate": # Para el nuevo mercado de 2 vías
-                    st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
-                    # En este caso, Selección 2 y Cuota 2 no aplican, ya que es una surebet de 2 vías
                 
                 st.markdown("---") # Separador entre surebets
     else:
@@ -592,5 +508,4 @@ if not st.session_state.search_in_progress:
             * **Amplía el rango de "Antelación del Evento":** Un rango mayor (ej. 48 o 72 horas) te dará más eventos para escanear. Las surebets son más probables en eventos futuros.
             * **Las surebets son raras:** A veces, simplemente no hay oportunidades de arbitraje disponibles. Esto es normal.
             * **Revisa la consola de tu navegador/terminal:** Si hay errores (ej. "Error HTTP 402" por API Key agotada o "Tiempo de espera agotado"), se mostrarán allí para un diagnóstico más preciso.
-            * **Ten en cuenta el consumo de créditos:** El mercado "Local o Visitante vs Empate" consume el doble de créditos por búsqueda.
             """)
