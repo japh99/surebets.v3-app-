@@ -575,7 +575,8 @@ if not st.session_state.search_in_progress:
                 # Adaptar la visualización según el mercado
                 if row['Mercado'] == "Ganador (1x2)":
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
-                    st.markdown(f"- **{Selección 2}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
+                    # LÍNEA CORREGIDA:
+                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
                 elif row['Mercado'] == "Local o Visitante vs Empate": # Para el nuevo mercado de 2 vías
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
                     # En este caso, Selección 2 y Cuota 2 no aplican, ya que es una surebet de 2 vías
