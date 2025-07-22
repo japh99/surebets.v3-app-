@@ -2,33 +2,30 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
-import time
 import concurrent.futures
+import time # Para simular el progreso y manejar timeouts
 
-# --- Configuración de la Página y Título ---
+
+# --- 1. Configuración Inicial de la Aplicación Streamlit ---
 st.set_page_config(
     page_title="Surebets: Buscador",
     page_icon="⚽",
     layout="wide"
 )
 
-st.title("⚽ Buscador de Surebets")
-st.markdown("""
-Esta aplicación **detecta oportunidades de surebets (arbitraje deportivo)** en tiempo real para **varios mercados**.
-""")
+st.title("Surebets: Buscador Avanzado")
+st.markdown("Detecta oportunidades de arbitraje deportivo en tiempo real en el mercado **1x2** para **fútbol**.")
+st.markdown("---")
 
-# --- Lista de API Keys ---
-# Es crucial mantener estas keys actualizadas y con créditos.
-# Si tus keys se agotan, la aplicación no funcionará correctamente.
-# NOTA: Por seguridad, en un entorno de producción real, estas keys NO deberían estar hardcodeadas aquí.
-# Se recomienda usar variables de entorno (secrets) de Streamlit o un servicio de gestión de secretos.
+# --- 2. Gestión Avanzada de 50 API Keys (Rotación Inteligente) ---
+# Tus 50 API Keys de The Odds API
 API_KEYS = [
-    "734f30d0866696cf90d5029ac106cfba", "10fb6d9d7b3240906d0acea646068535",
+    "734f30d0866696cf905029ac106cfba", "10fb6d9d7b3240906d0acea646068535",
     "a9ff72549c4910f1fa9659e175a35cc0", "25e9d8872877f5110254ff6ef42056c6",
     "6205cdb2cfd889e6fc44518f950f7dad", "d39a6f31abf6412d46b2c7185a5dfffe",
     "fbd5dece2a99c992cfd783aedfcd2ef3", "687ba857bcae9c7f33545dcbe59aeb2b",
     "f9ff83040b9d2afc1862094694f53da2", "f730fa9137a7cd927554df334af916dc",
-    "9091ec0ea25e0cdcdfc161b91603e31a9a", "c0f7d526dd778654dfee7c0686124a77",
+    "9091ec0ea25e0cdfc161b91603e31a9a", "c0f7d526dd778654dfee7c0686124a77",
     "61a015bc1506aac11ec62901a6189dc6", "d585a73190a117c1041ccc778b92b23d9",
     "4056628d07b0b900175cb332c191cda0", "ac4d3eb2d6df42030568eadeee906770",
     "3cebba62ff5330d1a409160e686124a77", "358644d442444f95bd0b0278e4d3ea22",
@@ -50,467 +47,438 @@ API_KEYS = [
     "6f74a75a76f42fabaa815c4461c59980", "86de2f86b0b628024ef6d5546b479c0f"
 ]
 
-# --- Diccionario de Deportes de Interés ---
-SPORTS = {
-    "Fútbol": "soccer",
-    "Baloncesto": "basketball",
-    "Tenis": "tennis",
-    "Béisbol": "baseball_mlb",
-}
-
-# --- Diccionario de Mercados Disponibles (Ampliados para la API) ---
-MARKETS = {
-    "Ganador (Moneyline/H2H)": "h2h",
-    "Totales (Over/Under)": "totals",
-    "Spreads (Hándicap)": "spreads",
-}
-
-# --- Inicialización del Estado de Sesión de Streamlit ---
-# Se utilizan para mantener el estado de la aplicación entre recargas
+# Inicialización de st.session_state para la persistencia del estado
 if 'api_key_index' not in st.session_state:
     st.session_state.api_key_index = 0
 if 'api_key_status' not in st.session_state:
-    # Inicializa todas las keys como activas
-    st.session_state.api_key_status = {key: True for key in API_KEYS}
+    # {index: {'active': True, 'remaining_requests': None, 'used_requests': None, 'key_value': API_KEYS[index]}}
+    st.session_state.api_key_status = {i: {'active': True, 'remaining_requests': None, 'used_requests': None, 'key_value': API_KEYS[i]} for i in range(len(API_KEYS))}
 if 'depleted_api_keys' not in st.session_state:
     st.session_state.depleted_api_keys = []
-
-# --- Funciones Auxiliares para el Buscador ---
+if 'current_api_key_info' not in st.session_state:
+    st.session_state.current_api_key_info = None # Para mostrar la key en uso y sus créditos
+if 'active_api_keys_count' not in st.session_state:
+    st.session_state.active_api_keys_count = len(API_KEYS)
 
 def get_next_available_api_key_info():
     """
-    Obtiene la próxima API key disponible y su índice de forma segura para Streamlit.
-    Esta función DEBE ser llamada SOLAMENTE desde el hilo principal de Streamlit
-    para manipular st.session_state.
+    Selecciona de manera inteligente la próxima API key activa y funcional de la lista.
+    Actualiza st.session_state.api_key_index.
     """
     initial_index = st.session_state.api_key_index
     num_keys = len(API_KEYS)
-    
-    # Intentar encontrar una clave activa en el rango actual
-    for _ in range(num_keys): # Iterar a través de todas las claves si es necesario
-        current_key_index = st.session_state.api_key_index
-        current_key = API_KEYS[current_key_index]
-        
-        # Verificar si la clave actual está activa
-        if st.session_state.api_key_status.get(current_key, True):
-            # Si está activa, avanzamos el índice para la próxima vez y la devolvemos
-            st.session_state.api_key_index = (current_key_index + 1) % num_keys
-            return current_key, current_key_index
-        
-        # Si la clave actual no está activa, simplemente avanzamos al siguiente índice
-        st.session_state.api_key_index = (current_key_index + 1) % num_keys
-        
-        # Si hemos dado una vuelta completa y no encontramos ninguna clave activa, salimos
-        if st.session_state.api_key_index == initial_index:
-            break
+    for _ in range(num_keys): # Iterar a lo sumo el número de keys
+        current_idx = st.session_state.api_key_index
+        key_status = st.session_state.api_key_status[current_idx]
 
+        if key_status['active']:
+            st.session_state.api_key_index = (current_idx + 1) % num_keys
+            return key_status['key_value'], current_idx # Devolvemos la key y su índice para referencia
+        else:
+            # Si la key no está activa, pasamos a la siguiente
+            st.session_state.api_key_index = (current_idx + 1) % num_keys
+
+        if st.session_state.api_key_index == initial_index:
+            # Hemos dado una vuelta completa y no encontramos ninguna key activa
+            break
     return None, None # No hay keys disponibles
 
+
+# --- 3. Definición de Deportes y Mercados Enfocados ---
+SPORTS = {
+    "Fútbol": "soccer"
+}
+
+MARKETS = {
+    "Ganador (Moneyline/1x2)": "h2h"
+}
+
+# --- 4. Lógica de Filtro de Eventos por Estado y Antelación ---
 def get_event_status(commence_time_str, min_hours_ahead, max_hours_ahead):
     """
-    Clasifica un evento como 'Pre-Partido' si está dentro del rango de horas especificado
-    (mínimo y máximo antes del inicio). Excluye eventos 'En Vivo'.
+    Valida si un evento está en el rango de antelación deseado.
     """
-    # Manejar el formato Z para que datetime.fromisoformat funcione correctamente
-    commence_time = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
     now_utc = datetime.now(timezone.utc)
-    
-    if commence_time <= now_utc: # Excluir eventos que ya han comenzado (En Vivo)
-        return None
-    elif now_utc + timedelta(hours=min_hours_ahead) <= commence_time <= now_utc + timedelta(hours=max_hours_ahead):
-        return "🟢 Pre-Partido"
-    else:
-        return None # Eventos fuera del rango de antelación no son relevantes
+    # The Odds API devuelve la hora de inicio en formato ISO 8601 con zona horaria Z (UTC)
+    commence_time_utc = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
 
-def find_surebets_task(sport_name, sport_key, market_key, api_key, api_key_idx, min_hours_ahead, max_hours_ahead):
+    # Asegurarse de que el evento no ha comenzado
+    if commence_time_utc <= now_utc:
+        return None
+
+    time_difference = commence_time_utc - now_utc
+    hours_ahead = time_difference.total_seconds() / 3600
+
+    if min_hours_ahead <= hours_ahead <= max_hours_ahead:
+        return "🟢 Pre-Partido"
+    return None
+
+
+# --- 5. Búsqueda y Detección de Surebets 100% Reales ---
+def find_surebets_task(sport_key, api_key_value, api_key_idx, market_key, min_hours_ahead, max_hours_ahead):
     """
-    Busca surebets para un deporte y mercado específicos, filtrando por rango de antelación.
-    Esta función se ejecutará en un hilo secundario.
-    Devuelve las surebets encontradas y el estado de la API key utilizada.
-    NO DEBE ACCEDER DIRECTAMENTE A st.session_state.
+    Función que realiza la solicitud a la API y procesa las surebets para un deporte/mercado.
+    Diseñada para ser ejecutada en hilos separados.
     """
     surebets_found = []
-    api_key_depleted = False # Bandera para indicar si esta API key se agotó
+    api_key_depleted = False
     error_message = None
     remaining_requests = None
     used_requests = None
-    
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-    
+
+    ODDS_API_BASE_URL = "https://api.theoddsapi.com/v4/sports"
+    url = f"{ODDS_API_BASE_URL}/{sport_key}/odds"
     params = {
-        "apiKey": api_key,
-        "regions": "us,eu,uk,au", # Regiones de casas de apuestas a consultar
+        "apiKey": api_key_value,
+        "regions": "us,eu,uk,au", # Puedes ajustar las regiones según tu interés
         "markets": market_key,
         "oddsFormat": "decimal",
-        "bookmakers": "all" # Busca en todas las casas disponibles para el deporte
+        "bookmakers": "all" # Escanear todas las casas de apuestas
     }
-    
+
     try:
-        response = requests.get(url, params=params, timeout=30) # Timeout de 30 segundos
-        
-        # --- Lógica de Manejo de Errores de la API ---
-        if response.status_code == 401: # Unauthorized - API Key inválida
-            api_key_depleted = True
-            error_message = "API Key inválida o no autorizada."
-            return surebets_found, api_key_depleted, error_message, None, None
-        
-        if response.status_code == 402: # Payment Required - Límite de créditos alcanzado
-            api_key_depleted = True
-            error_message = "Créditos de API Key agotados."
-            return surebets_found, api_key_depleted, error_message, None, None
-        
-        if response.status_code >= 400: # Captura otros errores HTTP
-            error_message = f"Error API para '{sport_name}'. Código: {response.status_code} - {response.text}"
-            return surebets_found, api_key_depleted, error_message, None, None
+        response = requests.get(url, params=params, timeout=10) # 10 segundos de timeout
+        response.raise_for_status() # Lanza un HTTPError para respuestas de error (4xx o 5xx)
 
-        response.raise_for_status() # Lanza una excepción para otros errores HTTP >= 400
-        data = response.json()
-        
-        # Obtener información de uso de la API para devolverla
-        remaining_requests = response.headers.get('x-requests-remaining', 'N/A')
-        used_requests = response.headers.get('x-requests-used', 'N/A')
+        # Captura información de créditos de los encabezados
+        remaining_requests = response.headers.get('X-Requests-Remaining')
+        used_requests = response.headers.get('X-Requests-Used')
 
-        # --- Lógica Principal de Búsqueda de Surebets por Mercado ---
-        for event in data:
-            # Filtrar eventos por el estado de pre-partido y el rango de antelación
-            status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
-            if not status:
-                continue # Saltar eventos no relevantes (En Vivo o fuera de rango)
+        events = response.json()
 
-            home_team = event['home_team']
-            away_team = event['away_team']
-            
-            # Lógica para H2H (Moneyline/1x2 para fútbol)
-            if market_key == "h2h":
+        for event in events:
+            event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
+            if not event_status:
+                continue # Saltar eventos fuera del rango de antelación
+
+            # Solo procesar si el mercado "h2h" está disponible
+            if 'bookmakers' in event:
                 best_odds = {
-                    home_team: {'price': 0, 'bookmaker': ''}, 
-                    away_team: {'price': 0, 'bookmaker': ''},
-                    'Draw': {'price': 0, 'bookmaker': ''} # ¡Añadido el empate para 1x2!
+                    'home_team': {'odd': 0.0, 'bookmaker': ''},
+                    'away_team': {'odd': 0.0, 'bookmaker': ''},
+                    'draw': {'odd': 0.0, 'bookmaker': ''}
                 }
-                # Conjunto de nombres de resultados a buscar, incluyendo 'Draw'
-                outcome_names_to_check = {home_team, away_team, 'Draw'} 
 
+                # Buscar la mejor cuota para cada resultado (1, X, 2)
                 for bookmaker in event['bookmakers']:
-                    h2h_market = next((m for m in bookmaker['markets'] if m['key'] == market_key), None)
-                    if not h2h_market:
-                        continue
+                    for market in bookmaker['markets']:
+                        if market['key'] == market_key: # Nos aseguramos que sea el mercado 1x2 (h2h)
+                            for outcome in market['outcomes']:
+                                if outcome['name'] == event['home_team'] and outcome['price'] > best_odds['home_team']['odd']:
+                                    best_odds['home_team']['odd'] = outcome['price']
+                                    best_odds['home_team']['bookmaker'] = bookmaker['title']
+                                elif outcome['name'] == event['away_team'] and outcome['price'] > best_odds['away_team']['odd']:
+                                    best_odds['away_team']['odd'] = outcome['price']
+                                    best_odds['away_team']['bookmaker'] = bookmaker['title']
+                                elif outcome['name'] == 'Draw' and outcome['price'] > best_odds['draw']['odd']:
+                                    best_odds['draw']['odd'] = outcome['price']
+                                    best_odds['draw']['bookmaker'] = bookmaker['title']
 
-                    for outcome in h2h_market['outcomes']:
-                        outcome_name = outcome['name']
-                        price = outcome['price']
-                        
-                        # Actualizar la mejor cuota si es superior para el resultado específico
-                        if outcome_name in outcome_names_to_check and price > best_odds[outcome_name]['price']:
-                            best_odds[outcome_name]['price'] = price
-                            best_odds[outcome_name]['bookmaker'] = bookmaker['title']
-                
-                odds_home = best_odds[home_team]['price']
-                odds_draw = best_odds['Draw']['price']
-                odds_away = best_odds[away_team]['price']
-                
-                # Verificar que tenemos cuotas válidas para los 3 resultados
-                # y que provienen de al menos dos casas de apuestas distintas
-                if odds_home > 0 and odds_draw > 0 and odds_away > 0:
-                    bookmakers_involved = {
-                        best_odds[home_team]['bookmaker'],
-                        best_odds['Draw']['bookmaker'],
-                        best_odds[away_team]['bookmaker']
+                # Verificar que se encontraron cuotas válidas para los TRES resultados
+                if (best_odds['home_team']['odd'] > 0 and
+                    best_odds['away_team']['odd'] > 0 and
+                    best_odds['draw']['odd'] > 0):
+
+                    # --- Validación CRÍTICA: Casas de Apuestas Diferentes ---
+                    # Para que sea una surebet real (arbitraje), las mejores cuotas deben venir
+                    # de al menos dos casas de apuestas diferentes.
+                    involved_bookmakers = {
+                        best_odds['home_team']['bookmaker'],
+                        best_odds['away_team']['bookmaker'],
+                        best_odds['draw']['bookmaker']
                     }
-                    # Si todas las cuotas provienen de la misma casa, o alguna no tiene bookmaker (precio 0.0), no es surebet.
-                    if len(bookmakers_involved) < 2 or any(bm == '' for bm in bookmakers_involved):
-                        continue # No es una surebet válida si no hay al menos 2 casas distintas o faltan datos
-                        
-                    utilidad = (1 - (1/odds_home + 1/odds_draw + 1/odds_away)) * 100
-                else:
-                    continue # No hay cuotas completas para 1x2
 
-                if utilidad > 0.01: # Solo surebets con utilidad positiva
-                    surebets_found.append({
-                        "Deporte": sport_name,
-                        "Liga/Torneo": event['sport_title'],
-                        "Estado": status,
-                        "Evento": f"{home_team} vs {away_team}",
-                        "Fecha (UTC)": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%Y-%m-%d %H:%M'),
-                        "Mercado": "Ganador (1x2)", # Más específico para fútbol
-                        "Utilidad (%)": f"{utilidad:.2f}%",
-                        "Selección 1": home_team,
-                        "Mejor Cuota 1": odds_home,
-                        "Casa de Apuestas 1": best_odds[home_team]['bookmaker'],
-                        "Selección X": "Empate", 
-                        "Mejor Cuota X": odds_draw, 
-                        "Casa de Apuestas X": best_odds['Draw']['bookmaker'],
-                        "Selección 2": away_team,
-                        "Mejor Cuota 2": odds_away,
-                        "Casa de Apuestas 2": best_odds[away_team]['bookmaker'],
-                    })
+                    if len(involved_bookmakers) < 2:
+                        continue # No es una surebet de arbitraje si todas las cuotas son de la misma casa o solo de una.
 
-            # Lógica para Totales (Over/Under)
-            elif market_key == "totals":
-                best_totals_odds = {} # {point: {'over': {'price': X, 'bookmaker': Y}, 'under': {'price': A, 'bookmaker': B}}}
+                    # Cálculo de Utilidad (Fórmula de Arbitraje)
+                    # Suma de las probabilidades inversas
+                    sum_inverse_odds = (1 / best_odds['home_team']['odd'] +
+                                        1 / best_odds['draw']['odd'] +
+                                        1 / best_odds['away_team']['odd'])
 
-                for bookmaker in event['bookmakers']:
-                    totals_market = next((m for m in bookmaker['markets'] if m['key'] == market_key), None)
-                    if not totals_market:
-                        continue
-                    
-                    for outcome in totals_market['outcomes']:
-                        point = outcome['point']
-                        name = outcome['name'] # 'Over' or 'Under'
-                        price = outcome['price']
+                    # Si la suma es menor que 1, hay una oportunidad de arbitraje (utilidad positiva)
+                    if sum_inverse_odds < 1:
+                        utility = (1 - sum_inverse_odds) * 100
+                        if utility > 0.01: # Solo surebets con utilidad positiva significativa
+                            surebets_found.append({
+                                "Deporte": event['sport_title'],
+                                "Liga/Torneo": event['league'],
+                                "Evento": f"{event['home_team']} vs {event['away_team']}",
+                                "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
+                                "Mercado": MARKETS[selected_market_display], # Usamos el nombre legible del mercado
+                                "Utilidad (%)": utility,
+                                "Selección 1": event['home_team'],
+                                "Cuota 1": best_odds['home_team']['odd'],
+                                "Casa 1": best_odds['home_team']['bookmaker'],
+                                "Selección X": "Empate",
+                                "Cuota X": best_odds['draw']['odd'],
+                                "Casa X": best_odds['draw']['bookmaker'],
+                                "Selección 2": event['away_team'],
+                                "Cuota 2": best_odds['away_team']['odd'],
+                                "Casa 2": best_odds['away_team']['bookmaker']
+                            })
 
-                        if point not in best_totals_odds:
-                            best_totals_odds[point] = {'over': {'price': 0, 'bookmaker': ''}, 'under': {'price': 0, 'bookmaker': ''}}
-                        
-                        if name.lower() == 'over' and price > best_totals_odds[point]['over']['price']:
-                            best_totals_odds[point]['over']['price'] = price
-                            best_totals_odds[point]['over']['bookmaker'] = bookmaker['title']
-                        elif name.lower() == 'under' and price > best_totals_odds[point]['under']['price']:
-                            best_totals_odds[point]['under']['price'] = price
-                            best_totals_odds[point]['under']['bookmaker'] = bookmaker['title']
-                
-                for point, odds_data in best_totals_odds.items():
-                    over_odds = odds_data['over']['price']
-                    under_odds = odds_data['under']['price']
-
-                    if over_odds > 0 and under_odds > 0:
-                        # Verificar que las cuotas provienen de casas distintas
-                        bookmakers_involved = {odds_data['over']['bookmaker'], odds_data['under']['bookmaker']}
-                        if len(bookmakers_involved) < 2 or any(bm == '' for bm in bookmakers_involved):
-                            continue # No es una surebet válida si no hay 2 casas distintas o faltan datos
-                            
-                        utilidad = (1 - (1/over_odds + 1/under_odds)) * 100
-                    else:
-                        continue
-
-                    if utilidad > 0.01:
-                        surebets_found.append({
-                            "Deporte": sport_name,
-                            "Liga/Torneo": event['sport_title'],
-                            "Estado": status,
-                            "Evento": f"{home_team} vs {away_team} (Total: {point})",
-                            "Fecha (UTC)": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%Y-%m-%d %H:%M'),
-                            "Mercado": f"Totales (Over/Under {point})",
-                            "Utilidad (%)": f"{utilidad:.2f}%",
-                            "Selección 1": f"Over {point}",
-                            "Mejor Cuota 1": over_odds,
-                            "Casa de Apuestas 1": odds_data['over']['bookmaker'],
-                            "Selección X": "N/A",  # No aplica
-                            "Mejor Cuota X": 1.01, # Valor neutro
-                            "Casa de Apuestas X": "N/A", # No aplica
-                            "Selección 2": f"Under {point}",
-                            "Mejor Cuota 2": under_odds,
-                            "Casa de Apuestas 2": odds_data['under']['bookmaker'],
-                        })
-
-            # Lógica para Spreads (Hándicap)
-            elif market_key == "spreads":
-                best_spreads_odds = {} # {point: {'home_spread': {'price': X, 'bookmaker': Y, 'point': P_H}, 'away_spread': {'price': A, 'bookmaker': B, 'point': P_A}}}
-
-                for bookmaker in event['bookmakers']:
-                    spreads_market = next((m for m in bookmaker['markets'] if m['key'] == market_key), None)
-                    if not spreads_market:
-                        continue
-                    
-                    for outcome in spreads_market['outcomes']:
-                        point = outcome['point']
-                        name = outcome['name'] # Nombre del equipo
-                        price = outcome['price']
-
-                        # Normalizar el 'point' usando su valor absoluto como clave para agrupar spreads opuestos
-                        normalized_point = abs(point)
-
-                        if normalized_point not in best_spreads_odds:
-                            best_spreads_odds[normalized_point] = {
-                                'home_spread': {'price': 0, 'bookmaker': '', 'point': None}, 
-                                'away_spread': {'price': 0, 'bookmaker': '', 'point': None}
-                            }
-                        
-                        if name == home_team:
-                            if price > best_spreads_odds[normalized_point]['home_spread']['price']:
-                                best_spreads_odds[normalized_point]['home_spread']['price'] = price
-                                best_spreads_odds[normalized_point]['home_spread']['bookmaker'] = bookmaker['title']
-                                best_spreads_odds[normalized_point]['home_spread']['point'] = point # Guardar el punto original del hándicap
-                        elif name == away_team:
-                            if price > best_spreads_odds[normalized_point]['away_spread']['price']:
-                                best_spreads_odds[normalized_point]['away_spread']['price'] = price
-                                best_spreads_odds[normalized_point]['away_spread']['bookmaker'] = bookmaker['title']
-                                best_spreads_odds[normalized_point]['away_spread']['point'] = point # Guardar el punto original del hándicap
-                
-                for normalized_point, odds_data in best_spreads_odds.items():
-                    home_spread_odds = odds_data['home_spread']['price']
-                    away_spread_odds = odds_data['away_spread']['price']
-                    home_point = odds_data['home_spread']['point']
-                    away_point = odds_data['away_spread']['point']
-
-                    # Asegurarse de que tenemos cuotas para ambos lados del spread, que los puntos son opuestos y válidos
-                    if home_spread_odds > 0 and away_spread_odds > 0 and home_point is not None and away_point is not None and home_point == -away_point:
-                        # Verificar que las cuotas provienen de casas distintas
-                        bookmakers_involved = {odds_data['home_spread']['bookmaker'], odds_data['away_spread']['bookmaker']}
-                        if len(bookmakers_involved) < 2 or any(bm == '' for bm in bookmakers_involved):
-                            continue # No es una surebet válida si no hay 2 casas distintas o faltan datos
-                            
-                        utilidad = (1 - (1/home_spread_odds + 1/away_spread_odds)) * 100
-                    else:
-                        continue
-
-                    if utilidad > 0.01:
-                        surebets_found.append({
-                            "Deporte": sport_name,
-                            "Liga/Torneo": event['sport_title'],
-                            "Estado": status,
-                            "Evento": f"{home_team} ({home_point}) vs {away_team} ({away_point})",
-                            "Fecha (UTC)": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%Y-%m-%d %H:%M'),
-                            "Mercado": f"Spreads (Hándicap {normalized_point})", # Más específico
-                            "Utilidad (%)": f"{utilidad:.2f}%",
-                            "Selección 1": f"{home_team} ({home_point})",
-                            "Mejor Cuota 1": home_spread_odds,
-                            "Casa de Apuestas 1": odds_data['home_spread']['bookmaker'],
-                            "Selección X": "N/A",  # No aplica
-                            "Mejor Cuota X": 1.01, # Valor neutro
-                            "Casa de Apuestas X": "N/A", # No aplica
-                            "Selección 2": f"{away_team} ({away_point})",
-                            "Mejor Cuota 2": away_spread_odds,
-                            "Casa de Apuestas 2": odds_data['away_spread']['bookmaker'],
-                        })
-
-        # Devolver las surebets, si la key se agotó, el mensaje de error y la info de requests
-        return surebets_found, api_key_depleted, error_message, remaining_requests, used_requests
-
-    except requests.exceptions.RequestException as e:
-        error_message = f"Error de conexión o API para '{sport_name}': {e}"
-        return [], api_key_depleted, error_message, None, None
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            error_message = f"API Key {api_key_idx} inválida o no autorizada."
+            api_key_depleted = True # Considerarla agotada si falla por auth
+        elif e.response.status_code == 402:
+            error_message = f"API Key {api_key_idx} agotada (créditos)."
+            api_key_depleted = True
+        else:
+            error_message = f"Error HTTP {e.response.status_code} para API Key {api_key_idx}: {e.response.text}"
+            print(f"DEBUG: Error HTTP: {e.response.text}") # Para depuración
+    except requests.exceptions.ConnectionError:
+        error_message = f"Error de conexión para API Key {api_key_idx}. Verifica tu conexión a internet."
+    except requests.exceptions.Timeout:
+        error_message = f"Tiempo de espera agotado para API Key {api_key_idx}."
     except Exception as e:
-        error_message = f"Error inesperado en la tarea para '{sport_name}': {e}"
-        return [], api_key_depleted, error_message, None, None
+        error_message = f"Error inesperado con API Key {api_key_idx}: {e}"
 
-# --- Interfaz de Usuario con Streamlit (Solo Buscador) ---
+    return {
+        "surebets": surebets_found,
+        "api_key_depleted": api_key_depleted,
+        "error_message": error_message,
+        "remaining_requests": remaining_requests,
+        "used_requests": used_requests,
+        "api_key_idx": api_key_idx # Devolver el índice de la key usada
+    }
 
-st.sidebar.header("Panel de Control del Buscador")
 
-selected_sports = st.sidebar.multiselect(
-    "Selecciona los deportes a escanear:",
-    options=list(SPORTS.keys()),
-    default=["Fútbol", "Baloncesto"] 
-)
+# --- INTERFAZ DE USUARIO (Streamlit Sidebar y Panel Principal) ---
 
-# ¡CAMBIO IMPORTANTE AQUÍ! Eliminado 'format_func' para compatibilidad con Streamlit reciente.
-selected_market_name = st.sidebar.selectbox(
-    "Selecciona el mercado a escanear:",
-    options=list(MARKETS.keys()),
-    default="Ganador (Moneyline/H2H)"
-)
-selected_market_key = MARKETS[selected_market_name]
+# Barra Lateral (st.sidebar) - El Panel de Control Principal
+with st.sidebar:
+    st.title("Configuración de Surebets")
+    st.markdown("---")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Filtro de Tiempo de Eventos (Pre-Partido)")
-min_hours_ahead = st.sidebar.radio(
-    "Mostrar eventos con al menos esta antelación:",
-    options=[6, 12, 24], 
-    index=0, 
-)
-max_hours_ahead = st.sidebar.slider(
-    "Mostrar eventos con un máximo de antelación (horas):",
-    min_value=24,
-    max_value=72,
-    value=72,
-    step=12
-)
+    st.header("Filtros de Búsqueda")
 
-# Mostrar el conteo de API Keys disponibles y agotadas
-active_keys_count = sum(1 for status in st.session_state.api_key_status.values() if status)
-depleted_keys_count = len(st.session_state.depleted_api_keys)
-st.sidebar.info(f"🔑 **API Keys Activas:** {active_keys_count}/{len(API_KEYS)}")
-if depleted_keys_count > 0:
-    st.sidebar.warning(f"❌ **API Keys Agotadas:** {depleted_keys_count}")
+    # Deporte: Solo Fútbol
+    selected_sports_display = ["Fútbol"]
+    selected_sports_api_keys = [SPORTS["Fútbol"]]
+    st.info("Deporte seleccionado: Fútbol")
 
-if st.sidebar.button("🚀 Iniciar Búsqueda de Surebets"):
-    if not selected_sports:
-        st.warning("Por favor, selecciona al menos un deporte para buscar.")
-    elif active_keys_count == 0:
-        st.error("❌ No hay API Keys activas disponibles. Por favor, verifica tus claves o espera el reseteo de créditos.")
-    else:
-        results_placeholder = st.empty() # Placeholder para mostrar los resultados
-        progress_bar = st.progress(0) # Barra de progreso de la búsqueda
-        status_text = st.empty() # Texto de estado de la búsqueda
-        
-        all_surebets = []
-        total_searches = len(selected_sports) 
-        search_count = 0
+    # Mercado: Enfocado en 1x2 (h2h)
+    selected_market_display = st.selectbox(
+        "Selecciona el Mercado:",
+        options=list(MARKETS.keys()),
+        index=0, # Por defecto selecciona el primero (Ganador)
+        help="Actualmente, el buscador se enfoca en el mercado 1x2 (Ganador/Moneyline)."
+    )
+    selected_market_api_key = MARKETS[selected_market_display]
 
-        # Usar ThreadPoolExecutor para paralelizar las solicitudes API
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {}
-            # PREPARACIÓN DE TAREAS: Asignar una API key a cada deporte antes de enviar la tarea
-            for sport_name in selected_sports:
-                api_key, api_key_idx = get_next_available_api_key_info()
-                if api_key is None:
-                    st.error("❌ Todas las API Keys disponibles han agotado sus créditos o están marcadas como agotadas. Por favor, actualiza tus API Keys o espera el reseteo diario.")
-                    break # Salir del bucle si no hay más keys activas
-                
-                # Enviar la tarea al executor. La función find_surebets_task recibe la key y su índice.
-                futures[executor.submit(find_surebets_task, sport_name, SPORTS[sport_name], selected_market_key, api_key, api_key_idx, min_hours_ahead, max_hours_ahead)] = (sport_name, api_key, api_key_idx)
+    st.markdown("---")
+
+    # Control de Antelación
+    st.header("Antelación del Evento")
+    st.markdown("Selecciona el rango de antelación para las surebets, para evitar cambios bruscos en las cuotas.")
+
+    min_hours_option = st.radio(
+        "Mínimo de Horas de Antelación:",
+        options=[6, 12],
+        index=0, # Por defecto 6 horas
+        format_func=lambda x: f"{x} horas"
+    )
+
+    max_hours_option = st.radio(
+        "Máximo de Horas de Antelación:",
+        options=[48, 72],
+        index=1, # Por defecto 72 horas
+        format_func=lambda x: f"{x} horas"
+    )
+
+    # Ajuste automático si el mínimo es mayor o igual que el máximo
+    if min_hours_option >= max_hours_option:
+        st.warning("El mínimo de antelación no puede ser mayor o igual al máximo. Ajustando el máximo automáticamente.")
+        if min_hours_option == 6:
+            max_hours_option = 48
+        else: # min_hours_option == 12
+            max_hours_option = 72
+        st.info(f"Rango ajustado a {min_hours_option}-{max_hours_option} horas.")
+
+    min_hours_ahead = min_hours_option
+    max_hours_ahead = max_hours_option
+
+    st.markdown("---")
+
+    # Botón de Acción Principal
+    if st.button("🚀 Iniciar Búsqueda de Surebets", type="primary"):
+        if st.session_state.active_api_keys_count == 0:
+            st.error("No hay API Keys activas disponibles. ¡Revisa tu configuración o espera a que se reinicien los créditos!")
+        else:
+            st.session_state.all_surebets = [] # Resetear resultados anteriores
+            st.session_state.search_in_progress = True # Bandera para indicar búsqueda activa
+            st.success(f"Iniciando búsqueda de surebets de Fútbol con antelación entre {min_hours_ahead} y {max_hours_ahead} horas...")
+
+            # Inicializar placeholders para mensajes dinámicos en el panel principal
+            results_placeholder = st.empty()
+            progress_bar_placeholder = st.empty()
+            status_message_placeholder = st.empty()
+
+            progress_text = "Escaneando deportes..."
+            my_bar = progress_bar_placeholder.progress(0, text=progress_text)
             
-            # PROCESAR RESULTADOS: A medida que los futuros se completan, manejar los resultados en el hilo principal
-            for future in concurrent.futures.as_completed(futures):
-                sport_name, used_api_key, used_api_key_idx = futures[future]
-                try:
-                    # Los resultados de find_surebets_task son: surebets_found, api_key_depleted, error_message, remaining_requests, used_requests
-                    surebets_for_sport, key_depleted_in_thread, task_error_message, remaining_reqs, used_reqs = future.result() 
-                    
-                    # AHORA, en el HILO PRINCIPAL, actualizamos st.session_state y mostramos mensajes
-                    if key_depleted_in_thread:
-                        st.session_state.api_key_status[used_api_key] = False
-                        if used_api_key not in st.session_state.depleted_api_keys:
-                            st.session_state.depleted_api_keys.append(used_api_key)
-                        st.warning(f"⚠️ La API Key #{used_api_key_idx+1} (termina en {used_api_key[-4:]}) parece haber agotado sus créditos. Error: {task_error_message}")
-                    elif task_error_message:
-                        st.error(f"Error para '{sport_name}' con API Key #{used_api_key_idx+1} ({used_api_key[-4:]}): {task_error_message}")
-                    else:
-                        pass 
+            # Resetear el conteo de API Keys activas para este ciclo de búsqueda
+            current_active_keys = [idx for idx, status in st.session_state.api_key_status.items() if status['active']]
+            st.session_state.active_api_keys_count = len(current_active_keys)
 
-                    if surebets_for_sport:
-                        all_surebets.extend(surebets_for_sport)
+            # Usar ThreadPoolExecutor para concurrencia
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {}
+                for sport_name in selected_sports_display: # Solo Fútbol en este caso
+                    sport_key = SPORTS[sport_name]
                     
-                    search_count += 1
-                    progress = search_count / total_searches if total_searches > 0 else 1
-                    progress_bar.progress(progress)
-                    status_text.text(f"Completado: **{sport_name}**. Procesando... {search_count}/{total_searches}")
-                    
-                except Exception as exc:
-                    # Captura cualquier otro error inesperado que pueda ocurrir al procesar el resultado del futuro
-                    st.error(f"Error inesperado al procesar los resultados de '{sport_name}': {exc}. Por favor, revisa los logs.")
-                    
-        # --- FIN DE LA LÓGICA DE PARALELIZACIÓN ---
+                    # Obtener la próxima API key disponible
+                    api_key_value, api_key_idx = get_next_available_api_key_info()
 
-        # Mensaje final al terminar todas las búsquedas
-        status_text.success("¡Búsqueda completada!")
-        progress_bar.empty() # Ocultar barra de progreso al finalizar
+                    if api_key_value is None:
+                        status_message_placeholder.warning("No quedan API Keys activas para continuar el escaneo.")
+                        break # Salir del bucle si no hay más keys
+                    
+                    status_message_placeholder.info(f"Usando API Key {api_key_idx}. Solicitudes restantes: {st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A'}")
+                    
+                    # Actualizar la información de la API Key actual en la sesión para mostrarla en la UI
+                    st.session_state.current_api_key_info = {
+                        'key_id': f"Key {api_key_idx}",
+                        'remaining_requests': st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A',
+                        'used_requests': st.session_state.api_key_status[api_key_idx]['used_requests'] or 'N/A'
+                    }
+                    
+                    future = executor.submit(
+                        find_surebets_task,
+                        sport_key, api_key_value, api_key_idx, selected_market_api_key,
+                        min_hours_ahead, max_hours_ahead
+                    )
+                    futures[future] = sport_name
+
+                processed_sports_count = 0
+                for future in concurrent.futures.as_completed(futures):
+                    sport_name = futures[future]
+                    try:
+                        result = future.result()
+                        st.session_state.all_surebets.extend(result["surebets"])
+
+                        # Actualizar el estado de la API key utilizada en st.session_state (en el hilo principal)
+                        key_idx_used = result["api_key_idx"]
+                        if result["api_key_depleted"]:
+                            st.session_state.api_key_status[key_idx_used]['active'] = False
+                            if key_idx_used not in st.session_state.depleted_api_keys:
+                                st.session_state.depleted_api_keys.append(key_idx_used)
+                            st.session_state.active_api_keys_count = len(API_KEYS) - len(st.session_state.depleted_api_keys)
+                            status_message_placeholder.error(f"⚠️ {result['error_message']}")
+                        
+                        # Actualizar los contadores de requests de la API Key
+                        if result["remaining_requests"] is not None:
+                            st.session_state.api_key_status[key_idx_used]['remaining_requests'] = int(result["remaining_requests"])
+                        if result["used_requests"] is not None:
+                            st.session_state.api_key_status[key_idx_used]['used_requests'] = int(result["used_requests"])
+                        
+                        # Actualizar la info de la key actual mostrada si es la que se acaba de procesar
+                        if st.session_state.current_api_key_info and st.session_state.current_api_key_info['key_id'] == f"Key {key_idx_used}":
+                            st.session_state.current_api_key_info['remaining_requests'] = result["remaining_requests"] or 'N/A'
+                            st.session_state.current_api_key_info['used_requests'] = result["used_requests"] or 'N/A'
+
+                        if result["error_message"] and not result["api_key_depleted"]:
+                            status_message_placeholder.warning(f"Problema con {sport_name}: {result['error_message']}")
+
+                    except Exception as exc:
+                        status_message_placeholder.error(f"Error procesando {sport_name}: {exc}")
+
+                    processed_sports_count += 1
+                    progress = min(int((processed_sports_count / len(selected_sports_display)) * 100), 100)
+                    my_bar.progress(progress, text=f"Escaneando Fútbol... {progress}%")
+                    time.sleep(0.1) # Pequeña pausa para que la UI se actualice
+
+            my_bar.progress(100, text="Escaneo completado.")
+            status_message_placeholder.empty() # Limpiar mensaje de estado
+
+            st.session_state.search_in_progress = False # Búsqueda finalizada
+            st.rerun() # Volver a ejecutar para mostrar los resultados finales y actualizar la sidebar
+
+
+    st.markdown("---")
+
+    # Estado de API Keys (Información Crítica) - Actualización de visualización en la barra lateral
+    st.header("Estado de API Keys")
+
+    # Mostrar la API Key en uso y sus créditos justo debajo del botón o en una sección propia
+    if st.session_state.current_api_key_info:
+        current_key_info = st.session_state.current_api_key_info
+        st.markdown(f"**API Key en Último Uso:** `{current_key_info['key_id']}`")
+        col1_side, col2_side = st.columns(2)
+        with col1_side:
+            st.markdown(f"**Usadas:** `{current_key_info['used_requests']}`")
+        with col2_side:
+            st.markdown(f"**Restantes:** `{current_key_info['remaining_requests']}`")
+    else:
+        st.info("Inicia una búsqueda para ver el estado de la API Key en uso.")
+
+    st.markdown("---") # Separador
+
+    st.markdown(f"**API Keys Activas:** <span style='color:green;'>**{st.session_state.active_api_keys_count}**</span>", unsafe_allow_html=True)
+    st.markdown(f"**API Keys Agotadas:** <span style='color:red;'>**{len(st.session_state.depleted_api_keys)}**</span>", unsafe_allow_html=True)
+
+
+    with st.expander("Ver API Keys Agotadas"):
+        if st.session_state.depleted_api_keys:
+            for key_idx in st.session_state.depleted_api_keys:
+                st.write(f"- Key {key_idx}") # Mostrar el índice de la key agotada
+        else:
+            st.write("Ninguna API Key agotada hasta el momento.")
+
+    st.markdown("---")
+    st.caption("Datos actualizados por The Odds API")
+
+# --- Panel Principal (Visualización Dinámica) ---
+
+# Estos placeholders deben definirse fuera del bloque 'if st.button' para que Streamlit
+# pueda renderizarlos en cada re-ejecución y actualizar su contenido.
+results_placeholder = st.empty()
+progress_bar_placeholder = st.empty() # En caso de que se use para otros mensajes
+status_message_placeholder = st.empty()
+
+
+if 'search_in_progress' not in st.session_state:
+    st.session_state.search_in_progress = False
+if 'all_surebets' not in st.session_state:
+    st.session_state.all_surebets = []
+
+
+if not st.session_state.search_in_progress:
+    if st.session_state.all_surebets:
+        surebets_df = pd.DataFrame(st.session_state.all_surebets)
+        # Ordenar por utilidad de mayor a menor
+        surebets_df = surebets_df.sort_values(by="Utilidad (%)", ascending=False).reset_index(drop=True)
 
         with results_placeholder.container():
-            if not all_surebets:
-                # Mensaje más específico si no hay resultados debido a keys o no-surebets
-                if any(not status for status in st.session_state.api_key_status.values()):
-                    st.warning("No se encontraron surebets. Es posible que algunas API Keys hayan agotado sus créditos o no haya surebets disponibles para los deportes y mercado seleccionados.")
-                else:
-                    st.warning(f"No se encontraron surebets para los deportes y mercado '{selected_market_name}' seleccionados, en el rango de {min_hours_ahead} a {max_hours_ahead} horas de antelación.")
-            else:
-                st.success(f"¡Se encontraron **{len(all_surebets)}** oportunidades de surebet!")
-                
-                df = pd.DataFrame(all_surebets)
-                
-                st.subheader("Resultados de Surebets Encontradas")
-                
-                # Mostrar resultados individuales
-                for i, row in df.iterrows():
-                    st.markdown(f"**Evento:** {row['Evento']} | **Deporte:** {row['Deporte']} | **Liga:** {row['Liga/Torneo']} | **Fecha:** {row['Fecha (UTC)']}")
-                    st.markdown(f"**Mercado:** {row['Mercado']} | **Utilidad:** **<span style='color:green; font-size:1.1em;'>{row['Utilidad (%)']}</span>**", unsafe_allow_html=True)
-                    
-                    # Formato específico para H2H (1x2), Totals o Spreads
-                    if row['Mercado'] == "Ganador (1x2)":
-                        st.markdown(f"**{row['Selección 1']}:** {row['Mejor Cuota 1']} ({row['Casa de Apuestas 1']})")
-                        st.markdown(f"**{row['Selección X']}:** {row['Mejor Cuota X']} ({row['Casa de Apuestas X']})")
-                        st.markdown(f"**{row['Selección 2']}:** {row['Mejor Cuota 2']} ({row['Casa de Apuestas 2']})")
-                    elif "Totales" in row['Mercado'] or "Spreads" in row['Mercado']:
-                        st.markdown(f"**{row['Selección 1']}:** {row['Mejor Cuota 1']} ({row['Casa de Apuestas 1']})")
-                        st.markdown(f"**{row['Selección 2']}:** {row['Mejor Cuota 2']} ({row['Casa de Apuestas 2']})")
-                    st.markdown("---") # Separador visual
+            st.subheader("🎉 Oportunidades de Surebet Encontradas:")
+            
+            # Función para aplicar color a la utilidad
+            def color_utility(val):
+                color = 'green' if val > 0.01 else 'orange' # Solo verde si es significativamente positiva
+                return f'color: {color}; font-weight: bold;'
+            
+            # Mostrar DataFrame de resumen
+            st.dataframe(
+                surebets_df[['Deporte', 'Liga/Torneo', 'Evento', 'Fecha', 'Mercado', 'Utilidad (%)']].style.applymap(color_utility, subset=['Utilidad (%)']).format({'Utilidad (%)': "{:.2f}%"}),
+                use_container_width=True
+            )
+            st.markdown("---")
+            st.write("### 🔍 Detalle de las Surebets:")
+
+            # Mostrar cada surebet individualmente para mayor claridad
+            for index, row in surebets_df.iterrows():
+                st.markdown(f"#### ⚽ **{row['Evento']}**")
+                st.markdown(f"**Deporte:** {row['Deporte']} | **Liga:** {row['Liga/Torneo']}")
+                st.markdown(f"**Fecha:** {row['Fecha']} | **Mercado:** {row['Mercado']}")
+                st.markdown(f"**Utilidad:** <span style='color:green; font-weight:bold;'>{row['Utilidad (%)']:.2f}%</span>", unsafe_allow_html=True)
+                st.write("**Detalle de Apuestas:**")
+                st.markdown(f"- **{row['Selección 1']}:** Cuota `{row['Cuota 1']}` en `{row['Casa 1']}`")
+                st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
+                st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
+                st.markdown("---") # Separador entre surebets
+    else:
+        with results_placeholder.container():
+            st.info("No se encontraron surebets en los criterios seleccionados. Inicia una búsqueda o ajusta los filtros.")
