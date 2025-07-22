@@ -298,20 +298,21 @@ def find_surebets_task(sport_key, api_key_value, api_key_idx, market_selected_ap
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
-            error_message = f"API Key {api_key_idx} inválida o no autorizada."
+            error_message = f"API Key {api_key_idx} inválida o no autorizada. La key ha sido desactivada."
             api_key_depleted = True
         elif e.response.status_code == 402:
-            error_message = f"API Key {api_key_idx} agotada (créditos)."
+            error_message = f"API Key {api_key_idx} agotada (créditos). La key ha sido desactivada."
             api_key_depleted = True
         else:
-            error_message = f"Error HTTP {e.response.status_code} para API Key {api_key_idx}: {e.response.text}"
-            print(f"DEBUG: Error HTTP: {e.response.text}") # Para depuración
+            error_message = f"Error HTTP {e.response.status_code} para API Key {api_key_idx}: {e.response.text}. Revisa la consola para más detalles."
+            print(f"DEBUG: Error HTTP: {e.response.status_code} - {e.response.text}") # Para depuración
     except requests.exceptions.ConnectionError:
         error_message = f"Error de conexión para API Key {api_key_idx}. Verifica tu conexión a internet."
     except requests.exceptions.Timeout:
-        error_message = f"Tiempo de espera agotado para API Key {api_key_idx}."
+        error_message = f"Tiempo de espera agotado para API Key {api_key_idx}. Intenta de nuevo."
     except Exception as e:
-        error_message = f"Error inesperado con API Key {api_key_idx}: {e}"
+        error_message = f"Error inesperado con API Key {api_key_idx}: {e}. Revisa la consola para más detalles."
+        print(f"DEBUG: Error inesperado: {e}")
 
     return {
         "surebets": surebets_found,
@@ -405,8 +406,13 @@ with st.sidebar:
             st.session_state.active_api_keys_count = len(current_active_keys_indices)
             
             # Verificar si hay suficientes keys activas para los deportes a escanear (aquí solo uno)
-            if st.session_state.active_api_keys_count < len(selected_sports_display):
-                 st.session_state.status_message_placeholder.error(f"Se necesitan {len(selected_sports_display)} API Keys activas, pero solo hay {st.session_state.active_api_keys_count}. Algunas búsquedas podrían no realizarse.")
+            # Y advertir si el mercado combinado consumirá más créditos.
+            required_api_calls_per_sport = 2 if selected_market_api_key_type == "double_chance_and_draw" else 1
+            if st.session_state.active_api_keys_count < len(selected_sports_display) * required_api_calls_per_sport:
+                 st.session_state.status_message_placeholder.warning(f"Se necesitan al menos {required_api_calls_per_sport} API Key(s) activa(s) por búsqueda. Solo hay {st.session_state.active_api_keys_count} activas. La búsqueda podría fallar si se agotan.")
+            
+            if selected_market_api_key_type == "double_chance_and_draw":
+                st.session_state.status_message_placeholder.info("¡Atención! El mercado 'Local o Visitante vs Empate' consume **dos créditos API** por cada búsqueda.")
 
 
             # Usar ThreadPoolExecutor para concurrencia
@@ -420,9 +426,9 @@ with st.sidebar:
                 api_key_value, api_key_idx = get_next_available_api_key_info()
 
                 if api_key_value is None:
-                    st.session_state.status_message_placeholder.warning("No quedan API Keys activas para continuar el escaneo.")
+                    st.session_state.status_message_placeholder.error("No quedan API Keys activas para continuar el escaneo. Por favor, revisa el estado de tus keys.")
                 else:
-                    st.session_state.status_message_placeholder.info(f"Usando API Key {api_key_idx}. Solicitudes restantes: {st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A'}")
+                    st.session_state.status_message_placeholder.info(f"Usando API Key {api_key_idx}. Créditos restantes (estimado): {st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A'}")
                     
                     # Actualizar la información de la API Key actual en la sesión para mostrarla en la UI
                     st.session_state.current_api_key_info = {
@@ -459,9 +465,6 @@ with st.sidebar:
                         if result["remaining_requests"] is not None:
                             st.session_state.api_key_status[key_idx_used]['remaining_requests'] = int(result["remaining_requests"])
                         if result["used_requests"] is not None:
-                            # Sumar los requests usados por esta tarea al total acumulado de la key
-                            # Esto es una aproximación, ya que 'used_requests' del header es por ciclo de 24h
-                            # Pero para el reporte de "cuántos gastó la API en la última búsqueda", es correcto.
                             st.session_state.api_key_status[key_idx_used]['used_requests'] = int(result["used_requests"])
                         
                         # Actualizar la info de la key actual mostrada si es la que se acaba de procesar
@@ -572,7 +575,7 @@ if not st.session_state.search_in_progress:
                 # Adaptar la visualización según el mercado
                 if row['Mercado'] == "Ganador (1x2)":
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
-                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
+                    st.markdown(f"- **{Selección 2}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
                 elif row['Mercado'] == "Local o Visitante vs Empate": # Para el nuevo mercado de 2 vías
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
                     # En este caso, Selección 2 y Cuota 2 no aplican, ya que es una surebet de 2 vías
@@ -580,4 +583,13 @@ if not st.session_state.search_in_progress:
                 st.markdown("---") # Separador entre surebets
     else:
         with st.session_state.results_placeholder.container(): # Usar el placeholder de session_state
-            st.info("No se encontraron surebets en los criterios seleccionados. Inicia una búsqueda o ajusta los filtros.")
+            st.info("No se encontraron surebets en este momento para los criterios seleccionados. Intenta ajustar los filtros o vuelve a intentarlo más tarde.")
+            st.markdown("---")
+            st.header("💡 Solución de Problemas si no hay Resultados:")
+            st.markdown("""
+            * **Verifica el "Estado de API Keys" en la barra lateral:** Asegúrate de que tienes API Keys activas y con créditos restantes. Si todas están agotadas, deberás esperar al reinicio diario de créditos de The Odds API.
+            * **Amplía el rango de "Antelación del Evento":** Un rango mayor (ej. 48 o 72 horas) te dará más eventos para escanear. Las surebets son más probables en eventos futuros.
+            * **Las surebets son raras:** A veces, simplemente no hay oportunidades de arbitraje disponibles. Esto es normal.
+            * **Revisa la consola de tu navegador/terminal:** Si hay errores (ej. "Error HTTP 402" por API Key agotada o "Tiempo de espera agotado"), se mostrarán allí para un diagnóstico más preciso.
+            * **Ten en cuenta el consumo de créditos:** El mercado "Local o Visitante vs Empate" consume el doble de créditos por búsqueda.
+            """)
