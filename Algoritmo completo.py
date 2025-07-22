@@ -28,7 +28,7 @@ API_KEYS = [
     "6205cdb2cfd889e6fc44518f950f7dad", "d39a6f31abf6412d46b2c7185a5dfffe",
     "fbd5dece2a99c992cfd783aedfcd2ef3", "687ba857bcae9c7f33545dcbe59aeb2b",
     "f9ff83040b9d2afc1862094694f53da2", "f730fa9137a7cd927554df334af916dc",
-    "9091ec0ea25e0cdfc161b91603e31a9a", "c0f7d526dd778654dfee7c0686124a77",
+    "9091ec0ea25e0cdcdfc161b91603e31a9a", "c0f7d526dd778654dfee7c0686124a77",
     "61a015bc1506aac11ec62901a6189dc6", "d585a73190a117c1041ccc778b92b23d9",
     "4056628d07b0b900175cb332c191cda0", "ac4d3eb2d6df42030568eadeee906770",
     "3cebba62ff5330d1a409160e686124a77", "358644d442444f95bd0b0278e4d3ea22",
@@ -390,9 +390,10 @@ st.sidebar.header("Panel de Control del Buscador")
 selected_sports = st.sidebar.multiselect(
     "Selecciona los deportes a escanear:",
     options=list(SPORTS.keys()),
-    default=["Fútbol", "Baloncesto"] # Cambiado a fútbol y baloncesto por defecto
+    default=["Fútbol", "Baloncesto"] 
 )
 
+# ¡CAMBIO IMPORTANTE AQUÍ! Eliminado 'format_func' para compatibilidad con Streamlit reciente.
 selected_market_name = st.sidebar.selectbox(
     "Selecciona el mercado a escanear:",
     options=list(MARKETS.keys()),
@@ -404,8 +405,8 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Filtro de Tiempo de Eventos (Pre-Partido)")
 min_hours_ahead = st.sidebar.radio(
     "Mostrar eventos con al menos esta antelación:",
-    options=[6, 12, 24], # Añadida opción de 24 horas
-    index=0, # Por defecto 6 horas
+    options=[6, 12, 24], 
+    index=0, 
 )
 max_hours_ahead = st.sidebar.slider(
     "Mostrar eventos con un máximo de antelación (horas):",
@@ -465,7 +466,7 @@ if st.sidebar.button("🚀 Iniciar Búsqueda de Surebets"):
                     elif task_error_message:
                         st.error(f"Error para '{sport_name}' con API Key #{used_api_key_idx+1} ({used_api_key[-4:]}): {task_error_message}")
                     else:
-                        pass # Ya no es necesario mostrar por cada key usada individualmente si ya tenemos el conteo total
+                        pass 
 
                     if surebets_for_sport:
                         all_surebets.extend(surebets_for_sport)
