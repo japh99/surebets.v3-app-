@@ -3,8 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
 import concurrent.futures
-import time # Para simular el progreso y manejar timeouts
-
+import time
 
 # --- 1. Configuración Inicial de la Aplicación Streamlit ---
 st.set_page_config(
@@ -89,7 +88,6 @@ SPORTS = {
     "Fútbol": "soccer"
 }
 
-# CAMBIO: Diccionario MARKETS con ambas opciones.
 MARKETS = {
     "Ganador (1x2 / Local, Empate, Visitante)": "h2h",
     "Local o Visitante vs Empate": "double_chance_draw_combo" # Custom combo for 2-way surebet
@@ -101,10 +99,8 @@ def get_event_status(commence_time_str, min_hours_ahead, max_hours_ahead):
     Valida si un evento está en el rango de antelación deseado.
     """
     now_utc = datetime.now(timezone.utc)
-    # The Odds API devuelve la hora de inicio en formato ISO 8601 con zona horaria Z (UTC)
     commence_time_utc = datetime.fromisoformat(commence_time_str.replace('Z', '+00:00'))
 
-    # Asegurarse de que el evento no ha comenzado
     if commence_time_utc <= now_utc:
         return None
 
@@ -264,9 +260,6 @@ def find_surebets_task(sport_key, api_key_value, api_key_idx, market_selected_ap
                     }
 
                     # Asegurarse de que las cuotas provienen de al menos dos casas de apuestas diferentes
-                    # para una verdadera surebet (o de la misma casa si la utilidad es significativa,
-                    # pero típicamente buscamos entre casas).
-                    # Para simplificar, requerimos que las casas sean diferentes para estas dos selecciones.
                     if len(involved_bookmakers) < 2:
                         continue
 
@@ -304,7 +297,7 @@ def find_surebets_task(sport_key, api_key_value, api_key_idx, market_selected_ap
             api_key_depleted = True
         else:
             error_message = f"Error HTTP {e.response.status_code} para API Key {api_key_idx}: {e.response.text}. Revisa la consola para más detalles."
-            print(f"DEBUG: Error HTTP: {e.response.status_code} - {e.response.text}") # Para depuración
+            print(f"DEBUG: Error HTTP: {e.response.status_code} - {e.response.text}")
     except requests.exceptions.ConnectionError:
         error_message = f"Error de conexión para API Key {api_key_idx}. Verifica tu conexión a internet."
     except requests.exceptions.Timeout:
@@ -332,23 +325,19 @@ with st.sidebar:
 
     st.header("Filtros de Búsqueda")
 
-    # Deporte: Solo Fútbol
     selected_sports_display = ["Fútbol"]
     selected_sports_api_keys = [SPORTS["Fútbol"]]
     st.info("Deporte seleccionado: Fútbol")
 
-    # CAMBIO: Selectbox con ambas etiquetas para el mismo mercado h2h y el nuevo mercado combinado
     selected_market_name = st.selectbox(
         "Selecciona el mercado a escanear:",
         options=list(MARKETS.keys()),
         index=0 # Por defecto "Ganador (1x2 / Local, Empate, Visitante)"
     )
-    # Obtenemos la clave de API (o la clave interna de combinación) del mercado seleccionado
     selected_market_api_key_type = MARKETS[selected_market_name] 
 
     st.markdown("---")
 
-    # Control de Antelación
     st.header("Antelación del Evento")
     st.markdown("Selecciona el rango de antelación para las surebets, para evitar cambios bruscos en las cuotas.")
 
@@ -381,110 +370,110 @@ with st.sidebar:
 
     # Botón de Acción Principal
     if st.button("🚀 Iniciar Búsqueda de Surebets", type="primary"):
-        # Determinar las llamadas a la API necesarias según el mercado seleccionado
         required_api_calls_per_sport = 1
         if selected_market_api_key_type == "double_chance_draw_combo":
             required_api_calls_per_sport = 2
         
         if st.session_state.active_api_keys_count == 0:
             st.error("No hay API Keys activas disponibles. ¡Revisa tu configuración o espera a que se reinicien los créditos!")
-            st.stop()
+            # st.stop() # Evitamos st.stop() para una interacción más fluida, solo mostramos el error
+            st.session_state.search_in_progress = False
+            # st.rerun() # Opcional: para forzar el re-renderizado
         elif st.session_state.active_api_keys_count < required_api_calls_per_sport:
              st.error(f"Se necesitan al menos **{required_api_calls_per_sport}** API Key(s) activa(s) para el mercado '{selected_market_name}'. Solo hay **{st.session_state.active_api_keys_count}** activas. Por favor, espera a que se reinicien los créditos o desactiva las agotadas.")
-             st.stop() # Detener ejecución si no hay suficientes keys
+             st.session_state.search_in_progress = False
+        else: # Solo procede si hay suficientes keys activas
+            st.session_state.all_surebets = []
+            st.session_state.search_in_progress = True
+            st.success(f"Iniciando búsqueda de surebets de Fútbol con antelación entre {min_hours_ahead} y {max_hours_ahead} horas...")
 
-        st.session_state.all_surebets = []
-        st.session_state.search_in_progress = True
-        st.success(f"Iniciando búsqueda de surebets de Fútbol con antelación entre {min_hours_ahead} y {max_hours_ahead} horas...")
+            if 'results_placeholder' not in st.session_state:
+                st.session_state.results_placeholder = st.empty()
+            if 'progress_bar_placeholder' not in st.session_state:
+                st.session_state.progress_bar_placeholder = st.empty()
+            if 'status_message_placeholder' not in st.session_state:
+                st.session_state.status_message_placeholder = st.empty()
 
-        if 'results_placeholder' not in st.session_state:
-            st.session_state.results_placeholder = st.empty()
-        if 'progress_bar_placeholder' not in st.session_state:
-            st.session_state.progress_bar_placeholder = st.empty()
-        if 'status_message_placeholder' not in st.session_state:
-            st.session_state.status_message_placeholder = st.empty()
-
-        progress_text = "Escaneando deportes..."
-        my_bar = st.session_state.progress_bar_placeholder.progress(0, text=progress_text)
-        
-        current_active_keys_indices = [idx for idx, status in st.session_state.api_key_status.items() if status['active']]
-        st.session_state.active_api_keys_count = len(current_active_keys_indices)
-        
-        if selected_market_api_key_type == "double_chance_draw_combo":
-            st.session_state.status_message_placeholder.info(
-                "¡Atención! El mercado 'Local o Visitante vs Empate' consume **dos créditos API** por cada búsqueda."
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {}
-            sport_name = selected_sports_display[0]
-            sport_key = SPORTS[sport_name]
+            progress_text = "Escaneando deportes..."
+            my_bar = st.session_state.progress_bar_placeholder.progress(0, text=progress_text)
             
-            api_key_value, api_key_idx = get_next_available_api_key_info()
-
-            if api_key_value is None:
-                st.session_state.status_message_placeholder.error("No quedan API Keys activas para continuar el escaneo. Por favor, revisa el estado de tus keys.")
-                st.session_state.search_in_progress = False
-                st.stop()
-            else:
+            current_active_keys_indices = [idx for idx, status in st.session_state.api_key_status.items() if status['active']]
+            st.session_state.active_api_keys_count = len(current_active_keys_indices)
+            
+            if selected_market_api_key_type == "double_chance_draw_combo":
                 st.session_state.status_message_placeholder.info(
-                    f"**Iniciando búsqueda con API Key {api_key_idx}.** "
-                    f"Créditos restantes (estimado antes de esta búsqueda): "
-                    f"**{st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A'}**"
+                    "¡Atención! El mercado 'Local o Visitante vs Empate' consume **dos créditos API** por cada búsqueda."
                 )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {}
+                sport_name = selected_sports_display[0]
+                sport_key = SPORTS[sport_name]
                 
-                st.session_state.current_api_key_info = {
-                    'key_id': f"Key {api_key_idx}",
-                    'remaining_requests': st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A',
-                    'used_requests': st.session_state.api_key_status[api_key_idx]['used_requests'] or 'N/A'
-                }
-                
-                future = executor.submit(
-                    find_surebets_task,
-                    sport_key, api_key_value, api_key_idx, selected_market_api_key_type,
-                    min_hours_ahead, max_hours_ahead
-                )
-                futures[future] = sport_name
+                api_key_value, api_key_idx = get_next_available_api_key_info()
 
-            processed_sports_count = 0
-            for future in concurrent.futures.as_completed(futures):
-                sport_name = futures[future]
-                try:
-                    result = future.result()
-                    st.session_state.all_surebets.extend(result["surebets"])
-
-                    key_idx_used = result["api_key_idx"]
-                    if result["api_key_depleted"]:
-                        st.session_state.api_key_status[key_idx_used]['active'] = False
-                        if key_idx_used not in st.session_state.depleted_api_keys:
-                            st.session_state.depleted_api_keys.append(key_idx_used)
-                        st.session_state.active_api_keys_count = len(API_KEYS) - len(st.session_state.depleted_api_keys)
-                        st.session_state.status_message_placeholder.error(f"⚠️ {result['error_message']}")
+                if api_key_value is None:
+                    st.session_state.status_message_placeholder.error("No quedan API Keys activas para continuar el escaneo. Por favor, revisa el estado de tus keys.")
+                    st.session_state.search_in_progress = False
+                else:
+                    st.session_state.status_message_placeholder.info(
+                        f"**Iniciando búsqueda con API Key {api_key_idx}.** "
+                        f"Créditos restantes (estimado antes de esta búsqueda): "
+                        f"**{st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A'}**"
+                    )
                     
-                    if result["remaining_requests"] is not None:
-                        st.session_state.api_key_status[key_idx_used]['remaining_requests'] = int(result["remaining_requests"])
-                    if result["used_requests"] is not None:
-                        st.session_state.api_key_status[key_idx_used]['used_requests'] = int(result["used_requests"])
+                    st.session_state.current_api_key_info = {
+                        'key_id': f"Key {api_key_idx}",
+                        'remaining_requests': st.session_state.api_key_status[api_key_idx]['remaining_requests'] or 'N/A',
+                        'used_requests': st.session_state.api_key_status[api_key_idx]['used_requests'] or 'N/A'
+                    }
                     
-                    if st.session_state.current_api_key_info and st.session_state.current_api_key_info['key_id'] == f"Key {key_idx_used}":
-                        st.session_state.current_api_key_info['remaining_requests'] = result["remaining_requests"] or 'N/A'
-                        st.session_state.current_api_key_info['used_requests'] = result["used_requests"] or 'N/A'
+                    future = executor.submit(
+                        find_surebets_task,
+                        sport_key, api_key_value, api_key_idx, selected_market_api_key_type,
+                        min_hours_ahead, max_hours_ahead
+                    )
+                    futures[future] = sport_name
 
-                    if result["error_message"] and not result["api_key_depleted"]:
-                        st.session_state.status_message_placeholder.warning(f"Problema con {sport_name}: {result['error_message']}")
+                processed_sports_count = 0
+                for future in concurrent.futures.as_completed(futures):
+                    sport_name = futures[future]
+                    try:
+                        result = future.result()
+                        st.session_state.all_surebets.extend(result["surebets"])
 
-                except Exception as exc:
-                    st.session_state.status_message_placeholder.error(f"Error procesando {sport_name}: {exc}")
+                        key_idx_used = result["api_key_idx"]
+                        if result["api_key_depleted"]:
+                            st.session_state.api_key_status[key_idx_used]['active'] = False
+                            if key_idx_used not in st.session_state.depleted_api_keys:
+                                st.session_state.depleted_api_keys.append(key_idx_used)
+                            st.session_state.active_api_keys_count = len(API_KEYS) - len(st.session_state.depleted_api_keys)
+                            st.session_state.status_message_placeholder.error(f"⚠️ {result['error_message']}")
+                        
+                        if result["remaining_requests"] is not None:
+                            st.session_state.api_key_status[key_idx_used]['remaining_requests'] = int(result["remaining_requests"])
+                        if result["used_requests"] is not None:
+                            st.session_state.api_key_status[key_idx_used]['used_requests'] = int(result["used_requests"])
+                        
+                        if st.session_state.current_api_key_info and st.session_state.current_api_key_info['key_id'] == f"Key {key_idx_used}":
+                            st.session_state.current_api_key_info['remaining_requests'] = result["remaining_requests"] or 'N/A'
+                            st.session_state.current_api_key_info['used_requests'] = result["used_requests"] or 'N/A'
 
-                processed_sports_count += 1
-                progress = min(int((processed_sports_count / len(selected_sports_display)) * 100), 100)
-                my_bar.progress(progress, text=f"Escaneando Fútbol... {progress}%")
-                time.sleep(0.1)
+                        if result["error_message"] and not result["api_key_depleted"]:
+                            st.session_state.status_message_placeholder.warning(f"Problema con {sport_name}: {result['error_message']}")
 
-        my_bar.progress(100, text="Escaneo completado.")
-        st.session_state.status_message_placeholder.empty()
-        st.session_state.search_in_progress = False
-        st.rerun()
+                    except Exception as exc:
+                        st.session_state.status_message_placeholder.error(f"Error procesando {sport_name}: {exc}")
+
+                    processed_sports_count += 1
+                    progress = min(int((processed_sports_count / len(selected_sports_display)) * 100), 100)
+                    my_bar.progress(progress, text=f"Escaneando Fútbol... {progress}%")
+                    time.sleep(0.1)
+
+            my_bar.progress(100, text="Escaneo completado.")
+            st.session_state.status_message_placeholder.empty()
+            st.session_state.search_in_progress = False
+            st.rerun() # Para forzar el re-renderizado de los resultados
 
 
     st.markdown("---")
@@ -522,6 +511,8 @@ with st.sidebar:
 
 # --- Panel Principal (Visualización Dinámica) ---
 
+# Estos placeholders deben definirse fuera del bloque 'if st.button' para que Streamlit
+# pueda renderizarlos en cada re-ejecución y actualizar su contenido.
 if 'results_placeholder' not in st.session_state:
     st.session_state.results_placeholder = st.empty()
 if 'progress_bar_placeholder' not in st.session_state:
@@ -536,6 +527,7 @@ if 'all_surebets' not in st.session_state:
     st.session_state.all_surebets = []
 
 
+# Solo muestra los resultados si no hay una búsqueda en progreso
 if not st.session_state.search_in_progress:
     if st.session_state.all_surebets:
         surebets_df = pd.DataFrame(st.session_state.all_surebets)
@@ -563,12 +555,12 @@ if not st.session_state.search_in_progress:
                 st.write("**Detalle de Apuestas:**")
                 st.markdown(f"- **{row['Selección 1']}:** Cuota `{row['Cuota 1']}` en `{row['Casa 1']}`")
                 
-                # Adaptar la visualización según el mercado
                 if row['Mercado'] == "Ganador (1x2)":
                     st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
                     st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
                 elif row['Mercado'] == "Local o Visitante vs Empate":
-                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`") # 'Selección 2' aquí es 'Local o Visitante'
+                    # Para este mercado, 'Selección 1' es Empate y 'Selección 2' es Local o Visitante
+                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
 
                 st.markdown("---")
     else:
