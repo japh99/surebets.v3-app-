@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("Surebets: Buscador Avanzado")
-st.markdown("Detecta oportunidades de arbitraje deportivo en tiempo real en los mercados **1x2** y **Local o Visitante vs Empate** para **fútbol**.")
+st.markdown("Detecta oportunidades de arbitraje deportivo en tiempo real en el mercado **1x2** para **fútbol**.")
 st.markdown("---")
 
 # --- 2. Gestión Avanzada de 50 API Keys (Rotación Inteligente) ---
@@ -88,9 +88,9 @@ SPORTS = {
     "Fútbol": "soccer"
 }
 
+# Solo el mercado h2h
 MARKETS = {
-    "Ganador (1x2 / Local, Empate, Visitante)": "h2h",
-    "Local o Visitante vs Empate": "double_chance_draw_combo" # Custom combo for 2-way surebet
+    "Ganador (1x2 / Local, Empate, Visitante)": "h2h"
 }
 
 # --- 4. Lógica de Filtro de Eventos por Estado y Antelación ---
@@ -142,151 +142,69 @@ def find_surebets_task(sport_key, api_key_value, api_key_idx, market_selected_ap
         return response.json(), int(response.headers.get('X-Requests-Used', 0)), int(response.headers.get('X-Requests-Remaining', 0))
 
     try:
-        if market_selected_api_key_type == "h2h":
-            events_data, used, remaining = make_single_api_call("h2h")
-            local_used_requests_sum += used
-            local_remaining_requests_last_call = remaining
+        # Solo procesamos el mercado h2h
+        events_data, used, remaining = make_single_api_call("h2h")
+        local_used_requests_sum += used
+        local_remaining_requests_last_call = remaining
 
-            for event in events_data:
-                event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
-                if not event_status: continue
+        for event in events_data:
+            event_status = get_event_status(event['commence_time'], min_hours_ahead, max_hours_ahead)
+            if not event_status: continue
 
-                best_odds = {
-                    'home_team': {'odd': 0.0, 'bookmaker': ''},
-                    'away_team': {'odd': 0.0, 'bookmaker': ''},
-                    'draw': {'odd': 0.0, 'bookmaker': ''}
+            best_odds = {
+                'home_team': {'odd': 0.0, 'bookmaker': ''},
+                'away_team': {'odd': 0.0, 'bookmaker': ''},
+                'draw': {'odd': 0.0, 'bookmaker': ''}
+            }
+
+            for bookmaker in event['bookmakers']:
+                for market in bookmaker['markets']:
+                    if market['key'] == "h2h":
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == event['home_team'] and outcome['price'] > best_odds['home_team']['odd']:
+                                best_odds['home_team']['odd'] = outcome['price']
+                                best_odds['home_team']['bookmaker'] = bookmaker['title']
+                            elif outcome['name'] == event['away_team'] and outcome['price'] > best_odds['away_team']['odd']:
+                                best_odds['away_team']['odd'] = outcome['price']
+                                best_odds['away_team']['bookmaker'] = bookmaker['title']
+                            elif outcome['name'] == 'Draw' and outcome['price'] > best_odds['draw']['odd']:
+                                best_odds['draw']['odd'] = outcome['price']
+                                best_odds['draw']['bookmaker'] = bookmaker['title']
+
+            if all(o['odd'] > 0 for o in best_odds.values()):
+                involved_bookmakers = {
+                    best_odds['home_team']['bookmaker'],
+                    best_odds['away_team']['bookmaker'],
+                    best_odds['draw']['bookmaker']
                 }
 
-                for bookmaker in event['bookmakers']:
-                    for market in bookmaker['markets']:
-                        if market['key'] == "h2h":
-                            for outcome in market['outcomes']:
-                                if outcome['name'] == event['home_team'] and outcome['price'] > best_odds['home_team']['odd']:
-                                    best_odds['home_team']['odd'] = outcome['price']
-                                    best_odds['home_team']['bookmaker'] = bookmaker['title']
-                                elif outcome['name'] == event['away_team'] and outcome['price'] > best_odds['away_team']['odd']:
-                                    best_odds['away_team']['odd'] = outcome['price']
-                                    best_odds['away_team']['bookmaker'] = bookmaker['title']
-                                elif outcome['name'] == 'Draw' and outcome['price'] > best_odds['draw']['odd']:
-                                    best_odds['draw']['odd'] = outcome['price']
-                                    best_odds['draw']['bookmaker'] = bookmaker['title']
+                if len(involved_bookmakers) < 2:
+                    continue
 
-                if all(o['odd'] > 0 for o in best_odds.values()):
-                    involved_bookmakers = {
-                        best_odds['home_team']['bookmaker'],
-                        best_odds['away_team']['bookmaker'],
-                        best_odds['draw']['bookmaker']
-                    }
+                sum_inverse_odds = (1 / best_odds['home_team']['odd'] +
+                                    1 / best_odds['draw']['odd'] +
+                                    1 / best_odds['away_team']['odd'])
 
-                    if len(involved_bookmakers) < 2:
-                        continue
-
-                    sum_inverse_odds = (1 / best_odds['home_team']['odd'] +
-                                        1 / best_odds['draw']['odd'] +
-                                        1 / best_odds['away_team']['odd'])
-
-                    if sum_inverse_odds < 1:
-                        utility = (1 - sum_inverse_odds) * 100
-                        if utility > 0.01:
-                            surebets_found.append({
-                                "Deporte": event['sport_title'],
-                                "Liga/Torneo": event['league'],
-                                "Evento": f"{event['home_team']} vs {event['away_team']}",
-                                "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
-                                "Mercado": "Ganador (1x2)",
-                                "Utilidad (%)": utility,
-                                "Selección 1": event['home_team'],
-                                "Cuota 1": best_odds['home_team']['odd'],
-                                "Casa 1": best_odds['home_team']['bookmaker'],
-                                "Selección X": "Empate",
-                                "Cuota X": best_odds['draw']['odd'],
-                                "Casa X": best_odds['draw']['bookmaker'],
-                                "Selección 2": event['away_team'],
-                                "Cuota 2": best_odds['away_team']['odd'],
-                                "Casa 2": best_odds['away_team']['bookmaker']
-                            })
-
-        elif market_selected_api_key_type == "double_chance_draw_combo":
-            # Realizar dos llamadas a la API: una para h2h (para la cuota de empate) y otra para double_chance (para Home or Away)
-            events_data_h2h, used_h2h, remaining_h2h = make_single_api_call("h2h")
-            local_used_requests_sum += used_h2h
-            local_remaining_requests_last_call = remaining_h2h # Actualiza con los restantes de la última llamada
-
-            events_data_dc, used_dc, remaining_dc = make_single_api_call("double_chance")
-            local_used_requests_sum += used_dc
-            local_remaining_requests_last_call = remaining_dc # Actualiza con los restantes de la última llamada
-
-            # Mapear eventos de double_chance por ID para una búsqueda eficiente
-            event_map_dc = {event['id']: event for event in events_data_dc}
-
-            for event_h2h in events_data_h2h:
-                event_status = get_event_status(event_h2h['commence_time'], min_hours_ahead, max_hours_ahead)
-                if not event_status: continue
-
-                event_dc = event_map_dc.get(event_h2h['id'])
-                if not event_dc: continue # No hay datos double_chance para este evento
-
-                best_draw_odd = {'odd': 0.0, 'bookmaker': ''}
-                best_home_away_odd = {'odd': 0.0, 'bookmaker': ''}
-
-                # Encontrar la mejor cuota para 'Empate' del mercado h2h
-                for bookmaker_h2h in event_h2h['bookmakers']:
-                    for market_h2h in bookmaker_h2h['markets']:
-                        if market_h2h['key'] == "h2h":
-                            for outcome_h2h in market_h2h['outcomes']:
-                                if outcome_h2h['name'] == 'Draw' and outcome_h2h['price'] > best_draw_odd['odd']:
-                                    best_draw_odd['odd'] = outcome_h2h['price']
-                                    best_draw_odd['bookmaker'] = bookmaker_h2h['title']
-
-                # Encontrar la mejor cuota para 'Local o Visitante' (Home or Away) del mercado double_chance
-                for bookmaker_dc in event_dc['bookmakers']:
-                    for market_dc in bookmaker_dc['markets']:
-                        if market_dc['key'] == "double_chance":
-                            for outcome_dc in market_dc['outcomes']:
-                                # El nombre del resultado "Home or Away" es dinámico en The Odds API.
-                                # Puede ser "{HomeTeam} or {AwayTeam}" o "{AwayTeam} or {HomeTeam}".
-                                home_away_name1 = f"{event_h2h['home_team']} or {event_h2h['away_team']}"
-                                home_away_name2 = f"{event_h2h['away_team']} or {event_h2h['home_team']}"
-                                
-                                if (outcome_dc['name'] == home_away_name1 or outcome_dc['name'] == home_away_name2) \
-                                   and outcome_dc['price'] > best_home_away_odd['odd']:
-                                    best_home_away_odd['odd'] = outcome_dc['price']
-                                    best_home_away_odd['bookmaker'] = bookmaker_dc['title']
-
-                if best_draw_odd['odd'] > 0 and best_home_away_odd['odd'] > 0:
-                    involved_bookmakers = {
-                        best_draw_odd['bookmaker'],
-                        best_home_away_odd['bookmaker']
-                    }
-
-                    # Asegurarse de que las cuotas provienen de al menos dos casas de apuestas diferentes
-                    if len(involved_bookmakers) < 2:
-                        continue
-
-                    # Cálculo de la surebet para 2 resultados mutuamente excluyentes
-                    sum_inverse_odds = (1 / best_draw_odd['odd'] +
-                                        1 / best_home_away_odd['odd'])
-
-                    if sum_inverse_odds < 1:
-                        utility = (1 - sum_inverse_odds) * 100
-                        if utility > 0.01:
-                            surebets_found.append({
-                                "Deporte": event_h2h['sport_title'],
-                                "Liga/Torneo": event_h2h['league'],
-                                "Evento": f"{event_h2h['home_team']} vs {event_h2h['away_team']}",
-                                "Fecha": datetime.fromisoformat(event_h2h['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
-                                "Mercado": "Local o Visitante vs Empate",
-                                "Utilidad (%)": utility,
-                                "Selección 1": "Empate",
-                                "Cuota 1": best_draw_odd['odd'],
-                                "Casa 1": best_draw_odd['bookmaker'],
-                                "Selección X": "", # No aplica para esta surebet de 2 selecciones
-                                "Cuota X": "",     # No aplica
-                                "Casa X": "",      # No aplica
-                                "Selección 2": "Local o Visitante",
-                                "Cuota 2": best_home_away_odd['odd'],
-                                "Casa 2": best_home_away_odd['bookmaker']
-                            })
+                if sum_inverse_odds < 1:
+                    utility = (1 - sum_inverse_odds) * 100
+                    if utility > 0.01:
+                        surebets_found.append({
+                            "Deporte": event['sport_title'],
+                            "Liga/Torneo": event['league'],
+                            "Evento": f"{event['home_team']} vs {event['away_team']}",
+                            "Fecha": datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M UTC"),
+                            "Mercado": "Ganador (1x2)",
+                            "Utilidad (%)": utility,
+                            "Selección 1": event['home_team'],
+                            "Cuota 1": best_odds['home_team']['odd'],
+                            "Casa 1": best_odds['home_team']['bookmaker'],
+                            "Selección X": "Empate",
+                            "Cuota X": best_odds['draw']['odd'],
+                            "Casa X": best_odds['draw']['bookmaker'],
+                            "Selección 2": event['away_team'],
+                            "Cuota 2": best_odds['away_team']['odd'],
+                            "Casa 2": best_odds['away_team']['bookmaker']
+                        })
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
@@ -332,7 +250,7 @@ with st.sidebar:
     selected_market_name = st.selectbox(
         "Selecciona el mercado a escanear:",
         options=list(MARKETS.keys()),
-        index=0 # Por defecto "Ganador (1x2 / Local, Empate, Visitante)"
+        index=0 # Solo hay una opción ahora
     )
     selected_market_api_key_type = MARKETS[selected_market_name] 
 
@@ -370,17 +288,13 @@ with st.sidebar:
 
     # Botón de Acción Principal
     if st.button("🚀 Iniciar Búsqueda de Surebets", type="primary"):
-        required_api_calls_per_sport = 1
-        if selected_market_api_key_type == "double_chance_draw_combo":
-            required_api_calls_per_sport = 2
+        required_api_calls_per_sport = 1 # Siempre 1 para el mercado h2h
         
         if st.session_state.active_api_keys_count == 0:
             st.error("No hay API Keys activas disponibles. ¡Revisa tu configuración o espera a que se reinicien los créditos!")
-            # st.stop() # Evitamos st.stop() para una interacción más fluida, solo mostramos el error
             st.session_state.search_in_progress = False
-            # st.rerun() # Opcional: para forzar el re-renderizado
         elif st.session_state.active_api_keys_count < required_api_calls_per_sport:
-             st.error(f"Se necesitan al menos **{required_api_calls_per_sport}** API Key(s) activa(s) para el mercado '{selected_market_name}'. Solo hay **{st.session_state.active_api_keys_count}** activas. Por favor, espera a que se reinicien los créditos o desactiva las agotadas.")
+             st.error(f"Se necesitan al menos **{required_api_calls_per_sport}** API Key(s) activa(s). Solo hay **{st.session_state.active_api_keys_count}** activas. Por favor, espera a que se reinicien los créditos o desactiva las agotadas.")
              st.session_state.search_in_progress = False
         else: # Solo procede si hay suficientes keys activas
             st.session_state.all_surebets = []
@@ -400,11 +314,6 @@ with st.sidebar:
             current_active_keys_indices = [idx for idx, status in st.session_state.api_key_status.items() if status['active']]
             st.session_state.active_api_keys_count = len(current_active_keys_indices)
             
-            if selected_market_api_key_type == "double_chance_draw_combo":
-                st.session_state.status_message_placeholder.info(
-                    "¡Atención! El mercado 'Local o Visitante vs Empate' consume **dos créditos API** por cada búsqueda."
-                )
-
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {}
                 sport_name = selected_sports_display[0]
@@ -473,7 +382,7 @@ with st.sidebar:
             my_bar.progress(100, text="Escaneo completado.")
             st.session_state.status_message_placeholder.empty()
             st.session_state.search_in_progress = False
-            st.rerun() # Para forzar el re-renderizado de los resultados
+            st.rerun()
 
 
     st.markdown("---")
@@ -554,13 +463,8 @@ if not st.session_state.search_in_progress:
                 st.markdown(f"**Utilidad:** <span style='color:green; font-weight:bold;'>{row['Utilidad (%)']:.2f}%</span>", unsafe_allow_html=True)
                 st.write("**Detalle de Apuestas:**")
                 st.markdown(f"- **{row['Selección 1']}:** Cuota `{row['Cuota 1']}` en `{row['Casa 1']}`")
-                
-                if row['Mercado'] == "Ganador (1x2)":
-                    st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
-                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
-                elif row['Mercado'] == "Local o Visitante vs Empate":
-                    # Para este mercado, 'Selección 1' es Empate y 'Selección 2' es Local o Visitante
-                    st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
+                st.markdown(f"- **{row['Selección X']}:** Cuota `{row['Cuota X']}` en `{row['Casa X']}`")
+                st.markdown(f"- **{row['Selección 2']}:** Cuota `{row['Cuota 2']}` en `{row['Casa 2']}`")
 
                 st.markdown("---")
     else:
